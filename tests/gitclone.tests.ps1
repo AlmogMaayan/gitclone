@@ -7,7 +7,7 @@ $env:PATH = "$scriptDir;$env:PATH"   # invoke as `gitclone`, exactly as from PAT
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) "gitclone-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $failures = 0
 $checks = 0
-$expectedChecks = 31
+$expectedChecks = 32
 function Check([string]$what, [bool]$ok) {
     $script:checks++
     if ($ok) { Write-Host "PASS  $what" -ForegroundColor Green }
@@ -153,7 +153,19 @@ try {
     gitclone -Remove Four75.name9 -WhatIf *> $null
     Check '-WhatIf: folder kept' (Test-Path (Join-Path $parent 'Four75.name9'))
 
-    # 15. -help shows usage and does nothing else
+    # 15. worktree with an npm-workspace junction in ignored node_modules pointing at a folder git deletes first
+    Add-Content (Join-Path $work '.git\info\exclude') "node_modules/`napps/"
+    Set-Location $work
+    gitclone name10 *> $null
+    $t10 = Join-Path $parent 'Four75.name10'
+    New-Item -ItemType Directory (Join-Path $t10 'apps\admin') -Force | Out-Null
+    New-Item -ItemType Directory (Join-Path $t10 'node_modules\@smw') -Force | Out-Null
+    New-Item -ItemType Junction -Path (Join-Path $t10 'node_modules\@smw\admin') -Target (Join-Path $t10 'apps\admin') | Out-Null
+    Set-Location $parent
+    gitclone -Remove Four75.name10 -ErrorVariable err -ErrorAction SilentlyContinue *> $null
+    Check 'junction in node_modules: no error, folder and branch gone' (($err.Count -eq 0) -and (-not (Test-Path $t10)) -and ((Branches) -notcontains 'name10'))
+
+    # 16. -help shows usage and does nothing else
     $before = (Get-Location).Path
     $help = gitclone -help | Out-String
     Check '-help: shows synopsis, parameters and examples' (($help -match 'SYNOPSIS') -and ($help -match '-Remove') -and ($help -match 'gitclone name1 -Clone'))

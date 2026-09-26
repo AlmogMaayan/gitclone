@@ -67,6 +67,11 @@ function Get-RepoRoot([string]$Path) {
     if ($LASTEXITCODE -eq 0 -and $top) { [IO.Path]::GetFullPath($top) }
 }
 
+function Get-Worktrees([string]$Path) {
+    @(git -C $Path worktree list --porcelain | Where-Object { $_ -like 'worktree *' } |
+        ForEach-Object { [IO.Path]::GetFullPath($_.Substring(9)).TrimEnd('\') })
+}
+
 if ($PSCmdlet.ParameterSetName -eq 'Remove') {
     $target = $null
     if (Test-Path -LiteralPath $Remove -PathType Container) {
@@ -83,8 +88,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Remove') {
 
     if ((Get-RepoRoot $target) -ne $target) { Write-Error "'$target' is not the top folder of a git repository."; return }
 
-    $worktrees = @(git -C $target worktree list --porcelain | Where-Object { $_ -like 'worktree *' } |
-        ForEach-Object { [IO.Path]::GetFullPath($_.Substring(9)).TrimEnd('\') })
+    $worktrees = @(Get-Worktrees $target)
     $main = $worktrees[0]
     $isWorktree = $main -ne $target
     if (-not $isWorktree -and $worktrees.Count -gt 1) {
@@ -102,8 +106,18 @@ if ($PSCmdlet.ParameterSetName -eq 'Remove') {
 
     if ($isWorktree) {
         $branch = git -C $target branch --show-current
-        if ($Force) { git -C $main worktree remove --force $target } else { git -C $main worktree remove $target }
-        if ($LASTEXITCODE -ne 0) { Write-Error "Not removed: '$target' has uncommitted or untracked changes. Commit/stash them, or use -Force."; return }
+        $out = if ($Force) { git -C $main worktree remove --force $target 2>&1 } else { git -C $main worktree remove $target 2>&1 }
+        if ($LASTEXITCODE -ne 0) {
+            if ((Get-Worktrees $main) -contains $target) {
+                $out | ForEach-Object { Write-Host "$_" }
+                Write-Error "Not removed: '$target' has uncommitted or untracked changes. Commit/stash them, or use -Force."
+                return
+            }
+            # git passed its checks and unregistered the worktree, but stopped deleting at something it
+            # can't remove on Windows (e.g. an npm-workspace junction in node_modules). Finish the job.
+            Remove-Item -LiteralPath $target -Recurse -Force
+            if (Test-Path -LiteralPath $target) { Write-Error "Unregistered the worktree, but could not fully delete '$target' (a file may be in use)."; return }
+        }
         Write-Host "Removed worktree $target" -ForegroundColor Green
         if ($branch) {
             git -C $main branch $(if ($Force) { '-D' } else { '-d' }) $branch 2>$null
