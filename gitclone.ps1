@@ -15,7 +15,10 @@
     (fast, shares objects with the current repo). Use -Clone for a fully independent clone.
 
     gitclone -Remove <folder> undoes it. For a worktree it runs `git worktree remove` and then
-    deletes the worktree's branch if that branch is merged. For a clone it deletes the folder.
+    deletes the worktree's branch if that branch is merged into its base (the branch's upstream,
+    else origin's default branch) - including when it was squash-merged, which `git branch -d`
+    alone cannot tell. Otherwise it keeps the branch and lists the commits that are not merged.
+    For a clone it deletes the folder.
     Either way it refuses when there are uncommitted or untracked changes (and, for a clone,
     unpushed commits or stashes) unless -Force is given.
 
@@ -39,6 +42,9 @@
 .PARAMETER Help
     Show this help.
 
+.PARAMETER Version
+    Show the gitclone version.
+
 .EXAMPLE
     gitclone name1
 .EXAMPLE
@@ -49,6 +55,8 @@
     gitclone -Remove Four75.name1
 .EXAMPLE
     gitclone -help
+.EXAMPLE
+    gitclone -version
 #>
 [CmdletBinding(DefaultParameterSetName = 'Create', SupportsShouldProcess)]
 param(
@@ -57,10 +65,15 @@ param(
     [Parameter(ParameterSetName = 'Create')][switch]$Clone,
     [Parameter(Mandatory, ParameterSetName = 'Remove')][string]$Remove,
     [Parameter(ParameterSetName = 'Remove')][switch]$Force,
-    [Parameter(Mandatory, ParameterSetName = 'Help')][switch]$Help
+    [Parameter(Mandatory, ParameterSetName = 'Help')][switch]$Help,
+    [Parameter(Mandatory, ParameterSetName = 'Version')][switch]$Version
 )
 
+# Bump on every change to this script (semver: fix -> patch, new behaviour -> minor, breaking -> major).
+$GitcloneVersion = '1.1.0'
+
 if ($Help) { Get-Help $PSCommandPath -Detailed; return }
+if ($Version) { "gitclone $GitcloneVersion"; return }
 
 function Get-RepoRoot([string]$Path) {
     $top = git -C $Path rev-parse --show-toplevel 2>$null
@@ -70,6 +83,28 @@ function Get-RepoRoot([string]$Path) {
 function Get-Worktrees([string]$Path) {
     @(git -C $Path worktree list --porcelain | Where-Object { $_ -like 'worktree *' } |
         ForEach-Object { [IO.Path]::GetFullPath($_.Substring(9)).TrimEnd('\') })
+}
+
+# The ref a branch is measured against: its upstream, else origin's default branch, else origin/master.
+function Get-BaseRef([string]$Path, [string]$Branch) {
+    $up = git -C $Path rev-parse --abbrev-ref --symbolic-full-name "$Branch@{upstream}" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $up) { return $up }
+    $head = git -C $Path symbolic-ref --short refs/remotes/origin/HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $head) { $head } else { 'origin/master' }
+}
+
+# True when everything $Branch changed since it left $Base is already in $Base: either $Branch is an
+# ancestor of $Base, or $Base contains one commit whose patch equals the branch squashed into a single
+# commit (a squash merge; `git branch -d` cannot see that because the branch's commits are not ancestors).
+function Test-MergedInto([string]$Path, [string]$Branch, [string]$Base) {
+    git -C $Path merge-base --is-ancestor $Branch $Base 2>$null
+    if ($LASTEXITCODE -eq 0) { return $true }
+    $mergeBase = git -C $Path merge-base $Base $Branch 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $tree = git -C $Path rev-parse "$Branch^{tree}"
+    $squash = git -C $Path commit-tree $tree -p $mergeBase -m "squash of $Branch"
+    $cherry = @(git -C $Path cherry $Base $squash 2>$null)
+    return ($LASTEXITCODE -eq 0) -and ($cherry.Count -eq 1) -and ($cherry[0] -like '-*')
 }
 
 if ($PSCmdlet.ParameterSetName -eq 'Remove') {
@@ -120,9 +155,20 @@ if ($PSCmdlet.ParameterSetName -eq 'Remove') {
         }
         Write-Host "Removed worktree $target" -ForegroundColor Green
         if ($branch) {
-            git -C $main branch $(if ($Force) { '-D' } else { '-d' }) $branch 2>$null
-            if ($LASTEXITCODE -eq 0) { Write-Host "Deleted branch $branch" -ForegroundColor Green }
-            else { Write-Warning "Kept branch '$branch': it has commits that are not merged. Delete it with: git branch -D $branch" }
+            if ($Force) {
+                git -C $main branch -D $branch 2>$null
+                Write-Host "Deleted branch $branch" -ForegroundColor Green
+            } else {
+                $base = Get-BaseRef $main $branch
+                if ($base -match '^([^/]+)/(.+)$') { git -C $main fetch --quiet $Matches[1] $Matches[2] 2>$null }   # best effort: judge against an up-to-date base
+                if (Test-MergedInto $main $branch $base) {
+                    git -C $main branch -D $branch 2>$null
+                    Write-Host "Deleted branch $branch (merged into $base)" -ForegroundColor Green
+                } else {
+                    $unmerged = @(git -C $main log --oneline "$base..$branch" 2>$null)
+                    Write-Warning ("Kept branch '$branch': it has commits not in ${base}:`n  " + ($unmerged -join "`n  ") + "`nDelete it with: git branch -D $branch")
+                }
+            }
         }
     } else {
         if (-not $Force) {

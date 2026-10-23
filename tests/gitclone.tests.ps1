@@ -7,7 +7,7 @@ $env:PATH = "$scriptDir;$env:PATH"   # invoke as `gitclone`, exactly as from PAT
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) "gitclone-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $failures = 0
 $checks = 0
-$expectedChecks = 32
+$expectedChecks = 39
 function Check([string]$what, [bool]$ok) {
     $script:checks++
     if ($ok) { Write-Host "PASS  $what" -ForegroundColor Green }
@@ -101,7 +101,8 @@ try {
     Set-Location $parent
     gitclone -Remove Four75.name5 -WarningVariable warn *> $null
     Check 'unmerged worktree: folder gone' (-not (Test-Path $t5))
-    Check 'unmerged worktree: branch kept with warning' (((Branches) -contains 'name5') -and "$warn" -match 'not merged')
+    Check 'unmerged worktree: branch kept with warning' (((Branches) -contains 'name5') -and "$warn" -match 'not in origin/master')
+    Check 'unmerged worktree: warning lists the unmerged commits' ("$warn" -match '\b[0-9a-f]{7,} three\b')
 
     # 8. remove from inside the worktree itself: steps out to the parent first
     Set-Location $work
@@ -165,11 +166,39 @@ try {
     gitclone -Remove Four75.name10 -ErrorVariable err -ErrorAction SilentlyContinue *> $null
     Check 'junction in node_modules: no error, folder and branch gone' (($err.Count -eq 0) -and (-not (Test-Path $t10)) -and ((Branches) -notcontains 'name10'))
 
-    # 16. -help shows usage and does nothing else
+    # 16. worktree whose commits were squash-merged into origin/master: branch deleted, no warning
+    Set-Location $work
+    gitclone name11 *> $null
+    $t11 = Join-Path $parent 'Four75.name11'
+    Set-Content (Join-Path $t11 'e.txt') 'five'
+    GitQ -C $t11 add .
+    GitQ -C $t11 commit -m five
+    Set-Content (Join-Path $t11 'e.txt') 'six'
+    GitQ -C $t11 add .
+    GitQ -C $t11 commit -m six
+    GitQ -C $t11 push origin name11
+    GitQ -C $seed fetch origin
+    GitQ -C $seed merge --squash origin/name11
+    GitQ -C $seed commit -m 'feat: five and six (squashed)'
+    GitQ -C $seed push origin master
+    Set-Location $parent
+    gitclone -Remove Four75.name11 -WarningVariable warn *> $null
+    Check 'squash-merged worktree: folder gone' (-not (Test-Path $t11))
+    Check 'squash-merged worktree: branch deleted' ((Branches) -notcontains 'name11')
+    Check 'squash-merged worktree: no warning' ($warn.Count -eq 0)
+
+    # 17. -help shows usage and does nothing else
     $before = (Get-Location).Path
     $help = gitclone -help | Out-String
     Check '-help: shows synopsis, parameters and examples' (($help -match 'SYNOPSIS') -and ($help -match '-Remove') -and ($help -match 'gitclone name1 -Clone'))
     Check '-help: location unchanged' ((Get-Location).Path -eq $before)
+
+    # 18. -version prints the version declared in the script and does nothing else
+    $declared = (Select-String -Path (Join-Path $scriptDir 'gitclone.ps1') -Pattern '^\$GitcloneVersion = ''([^'']+)''').Matches[0].Groups[1].Value
+    $ver = gitclone -version | Out-String
+    Check '-version: prints gitclone <semver>' ($ver.Trim() -match '^gitclone \d+\.\d+\.\d+$')
+    Check '-version: matches the version declared in the script' ($ver.Trim() -eq "gitclone $declared")
+    Check '-version: location unchanged' ((Get-Location).Path -eq $before)
 }
 finally {
     Set-Location ([IO.Path]::GetTempPath())
