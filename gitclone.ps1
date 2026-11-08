@@ -13,6 +13,8 @@
 
     Default mode is a git worktree on a new branch <Name> started from origin/<Base>
     (fast, shares objects with the current repo). Use -Clone for a fully independent clone.
+    If a local branch <Name> already exists (e.g. kept by an earlier -Remove because it was not
+    merged), gitclone asks [y/N] whether to delete it and start a fresh one; N keeps everything as is.
 
     gitclone -Remove <folder> undoes it. For a worktree it runs `git worktree remove` and then
     deletes the worktree's branch if that branch is merged into its base (the branch's upstream,
@@ -70,7 +72,7 @@ param(
 )
 
 # Bump on every change to this script (semver: fix -> patch, new behaviour -> minor, breaking -> major).
-$GitcloneVersion = '1.1.0'
+$GitcloneVersion = '1.2.0'
 
 if ($Help) { Get-Help $PSCommandPath -Detailed; return }
 if ($Version) { "gitclone $GitcloneVersion"; return }
@@ -203,8 +205,23 @@ if (-not $Base) {
 if ($Clone) {
     git clone --branch $Base $url $target
 } else {
+    # `worktree add -b` refuses to reuse a branch, so an existing <Name> (e.g. kept by an earlier -Remove
+    # because it was unmerged) must go first - but only with the user's say-so, since it may hold work.
+    git -C $root rev-parse --verify --quiet "refs/heads/$Name" *> $null
+    $branchExists = $LASTEXITCODE -eq 0
+    if ($branchExists) {
+        $usedIn = git -C $root worktree list --porcelain | Select-String -Pattern "^branch refs/heads/$([regex]::Escape($Name))$" -Context 2, 0 |
+            ForEach-Object { ($_.Context.PreContext | Where-Object { $_ -like 'worktree *' } | Select-Object -Last 1) -replace '^worktree ', '' }
+        if ($usedIn) { Write-Error "Branch '$Name' is already checked out in '$usedIn'. Remove that worktree first (gitclone -Remove '$usedIn')."; return }
+        $answer = Read-Host "Branch '$Name' already exists. Delete it and create a new one from origin/$Base? [y/N]"
+        if ($answer -notmatch '^\s*y(es)?\s*$') { Write-Host "Kept branch '$Name'; nothing created." -ForegroundColor Yellow; return }
+    }
     git -C $root fetch origin $Base
     if ($LASTEXITCODE -ne 0) { Write-Error "Could not fetch '$Base' from origin."; return }
+    if ($branchExists) {
+        git -C $root branch -D $Name
+        if ($LASTEXITCODE -ne 0) { Write-Error "Could not delete branch '$Name'."; return }
+    }
     git -C $root worktree add -b $Name $target "origin/$Base"
 }
 if ($LASTEXITCODE -ne 0) { Write-Error 'git failed; see output above.'; return }
