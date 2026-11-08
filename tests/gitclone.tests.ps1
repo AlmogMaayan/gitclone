@@ -7,7 +7,7 @@ $env:PATH = "$scriptDir;$env:PATH"   # invoke as `gitclone`, exactly as from PAT
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) "gitclone-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $failures = 0
 $checks = 0
-$expectedChecks = 44
+$expectedChecks = 50
 function Check([string]$what, [bool]$ok) {
     $script:checks++
     if ($ok) { Write-Host "PASS  $what" -ForegroundColor Green }
@@ -217,6 +217,36 @@ try {
     Check '-version: prints gitclone <semver>' ($ver.Trim() -match '^gitclone \d+\.\d+\.\d+$')
     Check '-version: matches the version declared in the script' ($ver.Trim() -eq "gitclone $declared")
     Check '-version: location unchanged' ((Get-Location).Path -eq $before)
+
+    # 19. pull check: a branch behind its upstream gets a [y/N] offer to fast-forward before the create
+    $global:prompts = @(); $global:answer = ''
+    function Read-Host([string]$Prompt) { $global:prompts += $Prompt; $global:answer }
+    Set-Location $work
+    gitclone name12 *> $null
+    Check 'pull check, no upstream: no prompt, worktree created' (($prompts.Count -eq 0) -and (Test-Path (Join-Path $parent 'Four75.name12')))
+    git -C $work branch --set-upstream-to=origin/master smw *> $null
+    $global:prompts = @()
+    $headBefore = git -C $work rev-parse HEAD
+    Set-Location $work
+    gitclone name13 *> $null
+    Check 'pull check, answer N: one prompt naming behind origin/master and [y/N]' (($prompts.Count -eq 1) -and ($prompts[0] -match 'behind origin/master') -and ($prompts[0] -match '\[y/N\]'))
+    Check 'pull check, answer N: HEAD unchanged, worktree created' (((git -C $work rev-parse HEAD) -eq $headBefore) -and (Test-Path (Join-Path $parent 'Four75.name13')))
+    $global:prompts = @(); $global:answer = 'y'
+    Set-Location $work
+    gitclone name14 *> $null
+    Check 'pull check, answer y: $work HEAD equals git -C $seed rev-parse HEAD' ((git -C $work rev-parse HEAD) -eq (git -C $seed rev-parse HEAD))
+    Check 'pull check, answer y: worktree created, cd into it' ((Test-Path (Join-Path $parent 'Four75.name14')) -and ((Get-Location).Path -eq (Join-Path $parent 'Four75.name14')))
+    GitQ -C $work commit --allow-empty -m local
+    Set-Content (Join-Path $seed 'f.txt') 'f'
+    GitQ -C $seed add .
+    GitQ -C $seed commit -m f
+    GitQ -C $seed push origin master
+    $global:prompts = @(); $global:answer = ''
+    Set-Location $work
+    $out = gitclone name15 -Clone *>&1 | Out-String
+    Check 'pull check, diverged (-Clone): one diverged line, no prompt, clone created' ((($out -split "`n" | Where-Object { $_ -match 'diverged' }).Count -eq 1) -and ($prompts.Count -eq 0) -and (Test-Path (Join-Path $parent 'Four75.name15')))
+    Remove-Item Function:\Read-Host
+    git -C $work branch --unset-upstream smw
 }
 finally {
     Set-Location ([IO.Path]::GetTempPath())
