@@ -7,7 +7,7 @@ $env:PATH = "$scriptDir;$env:PATH"   # invoke as `gitclone`, exactly as from PAT
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) "gitclone-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $failures = 0
 $checks = 0
-$expectedChecks = 39
+$expectedChecks = 44
 function Check([string]$what, [bool]$ok) {
     $script:checks++
     if ($ok) { Write-Host "PASS  $what" -ForegroundColor Green }
@@ -103,6 +103,24 @@ try {
     Check 'unmerged worktree: folder gone' (-not (Test-Path $t5))
     Check 'unmerged worktree: branch kept with warning' (((Branches) -contains 'name5') -and "$warn" -match 'not in origin/master')
     Check 'unmerged worktree: warning lists the unmerged commits' ("$warn" -match '\b[0-9a-f]{7,} three\b')
+
+    # 7b. gitclone again with the name of a branch that already exists (kept by the -Remove above):
+    #     asks "[y/N]" whether to delete it and start a fresh one. The script sees this Read-Host instead of the cmdlet.
+    $old5 = git -C $work rev-parse name5
+    $global:prompts = @(); $global:answer = ''
+    function Read-Host([string]$Prompt) { $global:prompts += $Prompt; $global:answer }
+    Set-Location $work
+    gitclone name5 *> $null
+    Check 'existing branch, answer N: asked [y/N] naming the branch' (($prompts.Count -eq 1) -and ($prompts[0] -match "name5" -and $prompts[0] -match '\[y/N\]'))
+    Check 'existing branch, answer N: nothing created, branch kept, location unchanged' ((-not (Test-Path $t5)) -and ((git -C $work rev-parse name5) -eq $old5) -and ((Get-Location).Path -eq $work))
+    $global:answer = 'y'
+    gitclone name5 *> $null
+    Check 'existing branch, answer y: worktree created on fresh name5 at latest origin/master' ((Test-Path $t5) -and ((git -C $t5 branch --show-current) -eq 'name5') -and ((git -C $t5 rev-parse HEAD) -eq $latest))
+    Check 'existing branch, answer y: old commit gone, cd into new folder' ((-not (Test-Path (Join-Path $t5 'c.txt'))) -and ((Get-Location).Path -eq $t5))
+    Remove-Item Function:\Read-Host
+    Set-Location $parent
+    gitclone -Remove Four75.name5 *> $null
+    Check 'existing branch: cleanup removed folder and branch' ((-not (Test-Path $t5)) -and ((Branches) -notcontains 'name5'))
 
     # 8. remove from inside the worktree itself: steps out to the parent first
     Set-Location $work
