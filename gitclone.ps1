@@ -15,6 +15,7 @@
     (fast, shares objects with the current repo). Use -Clone for a fully independent clone.
     If a local branch <Name> already exists (e.g. kept by an earlier -Remove because it was not
     merged), gitclone asks [y/N] whether to delete it and start a fresh one; N keeps everything as is.
+    A branch that is behind its upstream gets a [y/N] offer to `git pull --ff-only` first.
 
     gitclone -Remove <folder> undoes it. For a worktree it runs `git worktree remove` and then
     deletes the worktree's branch if that branch is merged into its base (the branch's upstream,
@@ -72,7 +73,7 @@ param(
 )
 
 # Bump on every change to this script (semver: fix -> patch, new behaviour -> minor, breaking -> major).
-$GitcloneVersion = '1.2.0'
+$GitcloneVersion = '1.3.0'
 
 if ($Help) { Get-Help $PSCommandPath -Detailed; return }
 if ($Version) { "gitclone $GitcloneVersion"; return }
@@ -200,6 +201,29 @@ if (Test-Path -LiteralPath $target) { Write-Error "'$target' already exists."; r
 if (-not $Base) {
     $originHead = git -C $root symbolic-ref --short refs/remotes/origin/HEAD 2>$null
     $Base = if ($LASTEXITCODE -eq 0 -and $originHead) { $originHead -replace '^origin/', '' } else { 'master' }
+}
+
+# Courtesy check (best effort, never blocks the create): offer to fast-forward a branch that is behind its upstream.
+$upstreamRef = git -C $root rev-parse --symbolic-full-name '@{upstream}' 2>$null
+if ($LASTEXITCODE -eq 0 -and $upstreamRef -match '^refs/remotes/([^/]+)/(.+)$') {
+    $upRemote = $Matches[1]; $upBranch = $Matches[2]
+    $upstream = "$upRemote/$upBranch"
+    git -C $root fetch --quiet $upRemote $upBranch 2>$null
+    $counts = if ($LASTEXITCODE -eq 0) { git -C $root rev-list --left-right --count 'HEAD...@{upstream}' 2>$null } else { $null }
+    if ($counts -and "$counts" -match '^\s*(\d+)\s+(\d+)\s*$') {
+        $ahead = [int]$Matches[1]; $behind = [int]$Matches[2]
+        $curBranch = git -C $root branch --show-current
+        if ($behind -gt 0 -and $ahead -eq 0) {
+            $pullAnswer = Read-Host "Branch '$curBranch' is $behind commit(s) behind $upstream. Pull now? [y/N]"
+            if ($pullAnswer -match '^\s*y(es)?\s*$') {
+                $pullOut = git -C $root pull --ff-only 2>&1
+                if ($LASTEXITCODE -eq 0) { Write-Host "Pulled $upstream into '$curBranch'." -ForegroundColor Green }
+                else { Write-Warning ($pullOut | Out-String) }
+            } else { Write-Host 'Skipped pull.' -ForegroundColor Yellow }
+        } elseif ($behind -gt 0 -and $ahead -gt 0) {
+            Write-Host "Branch '$curBranch' has diverged from $upstream ($ahead ahead, $behind behind); not pulling." -ForegroundColor Yellow
+        }
+    }
 }
 
 if ($Clone) {
