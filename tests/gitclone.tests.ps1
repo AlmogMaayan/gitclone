@@ -218,8 +218,8 @@ try {
     Check '-version: matches the version declared in the script' ($ver.Trim() -eq "gitclone $declared")
     Check '-version: location unchanged' ((Get-Location).Path -eq $before)
 
-    # 19. pull check: a branch behind its upstream gets a [y/N] offer to fast-forward before the create
-    $global:prompts = @(); $global:answer = ''
+    # 19. pull check: a branch behind its upstream gets a [Y/n] offer (Enter = yes) to fast-forward before the create
+    $global:prompts = @(); $global:answer = 'n'
     function Read-Host([string]$Prompt) { $global:prompts += $Prompt; $global:answer }
     Set-Location $work
     gitclone name12 *> $null
@@ -229,13 +229,13 @@ try {
     $headBefore = git -C $work rev-parse HEAD
     Set-Location $work
     gitclone name13 *> $null
-    Check 'pull check, answer N: one prompt naming behind origin/master and [y/N]' (($prompts.Count -eq 1) -and ($prompts[0] -match 'behind origin/master') -and ($prompts[0] -match '\[y/N\]'))
+    Check 'pull check, answer N: one prompt naming behind origin/master and [Y/n]' (($prompts.Count -eq 1) -and ($prompts[0] -match 'behind origin/master') -and ($prompts[0] -match '\[Y/n\]'))
     Check 'pull check, answer N: HEAD unchanged, worktree created' (((git -C $work rev-parse HEAD) -eq $headBefore) -and (Test-Path (Join-Path $parent 'Four75.name13')))
-    $global:prompts = @(); $global:answer = 'y'
+    $global:prompts = @(); $global:answer = ''
     Set-Location $work
     gitclone name14 *> $null
-    Check 'pull check, answer y: $work HEAD equals git -C $seed rev-parse HEAD' ((git -C $work rev-parse HEAD) -eq (git -C $seed rev-parse HEAD))
-    Check 'pull check, answer y: worktree created, cd into it' ((Test-Path (Join-Path $parent 'Four75.name14')) -and ((Get-Location).Path -eq (Join-Path $parent 'Four75.name14')))
+    Check 'pull check, Enter (default): $work HEAD equals git -C $seed rev-parse HEAD' ((git -C $work rev-parse HEAD) -eq (git -C $seed rev-parse HEAD))
+    Check 'pull check, Enter (default): worktree created, cd into it' ((Test-Path (Join-Path $parent 'Four75.name14')) -and ((Get-Location).Path -eq (Join-Path $parent 'Four75.name14')))
     GitQ -C $work commit --allow-empty -m local
     Set-Content (Join-Path $seed 'f.txt') 'f'
     GitQ -C $seed add .
